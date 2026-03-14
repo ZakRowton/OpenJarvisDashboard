@@ -1,0 +1,88 @@
+<?php
+header('Content-Type: application/json; charset=utf-8');
+
+$requestId = isset($_GET['request_id']) ? preg_replace('/[^a-zA-Z0-9_\-]/', '', (string) $_GET['request_id']) : '';
+if ($requestId === '') {
+    echo json_encode([
+        'requestId' => '',
+        'thinking' => false,
+        'gettingAvailTools' => false,
+        'activeToolIds' => [],
+        'checkingMemory' => false,
+        'checkingInstructions' => false,
+        'checkingMcps' => false,
+        'checkingJobs' => false,
+        'activeMemoryIds' => [],
+        'activeInstructionIds' => [],
+        'activeMcpIds' => [],
+        'activeJobIds' => [],
+        'graphRefreshToken' => '',
+    ]);
+    exit;
+}
+
+$path = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'runtime' . DIRECTORY_SEPARATOR . 'chat-status' . DIRECTORY_SEPARATOR . $requestId . '.json';
+if (!file_exists($path)) {
+    echo json_encode([
+        'requestId' => $requestId,
+        'thinking' => false,
+        'gettingAvailTools' => false,
+        'activeToolIds' => [],
+        'checkingMemory' => false,
+        'checkingInstructions' => false,
+        'checkingMcps' => false,
+        'checkingJobs' => false,
+        'activeMemoryIds' => [],
+        'activeInstructionIds' => [],
+        'activeMcpIds' => [],
+        'activeJobIds' => [],
+        'graphRefreshToken' => '',
+    ]);
+    exit;
+}
+
+$data = json_decode((string) file_get_contents($path), true);
+$data = is_array($data) ? $data : [];
+$nowMs = (int) round(microtime(true) * 1000);
+$hasRecentActivity = !empty($data['lastEventExpiresAtMs']) && $nowMs < (int) $data['lastEventExpiresAtMs'];
+$effectiveGettingAvailTools = !empty($data['gettingAvailTools']) || ($hasRecentActivity && !empty($data['lastGettingAvailTools']));
+$effectiveCheckingMemory = !empty($data['checkingMemory']) || ($hasRecentActivity && !empty($data['lastCheckingMemory']));
+$effectiveCheckingInstructions = !empty($data['checkingInstructions']) || ($hasRecentActivity && !empty($data['lastCheckingInstructions']));
+$effectiveCheckingMcps = !empty($data['checkingMcps']) || ($hasRecentActivity && !empty($data['lastCheckingMcps']));
+$effectiveCheckingJobs = !empty($data['checkingJobs']) || ($hasRecentActivity && !empty($data['lastCheckingJobs']));
+$effectiveActiveToolIds = isset($data['activeToolIds']) && is_array($data['activeToolIds']) && count($data['activeToolIds']) > 0
+    ? array_values($data['activeToolIds'])
+    : ($hasRecentActivity && isset($data['lastActiveToolIds']) && is_array($data['lastActiveToolIds']) ? array_values($data['lastActiveToolIds']) : []);
+$effectiveActiveMemoryIds = isset($data['activeMemoryIds']) && is_array($data['activeMemoryIds']) && count($data['activeMemoryIds']) > 0
+    ? array_values($data['activeMemoryIds'])
+    : ($hasRecentActivity && isset($data['lastActiveMemoryIds']) && is_array($data['lastActiveMemoryIds']) ? array_values($data['lastActiveMemoryIds']) : []);
+$effectiveActiveInstructionIds = isset($data['activeInstructionIds']) && is_array($data['activeInstructionIds']) && count($data['activeInstructionIds']) > 0
+    ? array_values($data['activeInstructionIds'])
+    : ($hasRecentActivity && isset($data['lastActiveInstructionIds']) && is_array($data['lastActiveInstructionIds']) ? array_values($data['lastActiveInstructionIds']) : []);
+$effectiveActiveMcpIds = isset($data['activeMcpIds']) && is_array($data['activeMcpIds']) && count($data['activeMcpIds']) > 0
+    ? array_values($data['activeMcpIds'])
+    : ($hasRecentActivity && isset($data['lastActiveMcpIds']) && is_array($data['lastActiveMcpIds']) ? array_values($data['lastActiveMcpIds']) : []);
+$effectiveActiveJobIds = isset($data['activeJobIds']) && is_array($data['activeJobIds']) && count($data['activeJobIds']) > 0
+    ? array_values($data['activeJobIds'])
+    : ($hasRecentActivity && isset($data['lastActiveJobIds']) && is_array($data['lastActiveJobIds']) ? array_values($data['lastActiveJobIds']) : []);
+$effectiveExecutionDetails = isset($data['executionDetailsByNode']) && is_array($data['executionDetailsByNode']) && count($data['executionDetailsByNode']) > 0
+    ? $data['executionDetailsByNode']
+    : ($hasRecentActivity && isset($data['lastExecutionDetailsByNode']) && is_array($data['lastExecutionDetailsByNode']) ? $data['lastExecutionDetailsByNode'] : []);
+$effectiveThinking = !empty($data['thinking']) || $effectiveGettingAvailTools || $effectiveCheckingMemory || $effectiveCheckingInstructions || $effectiveCheckingMcps || $effectiveCheckingJobs || count($effectiveActiveToolIds) > 0 || count($effectiveActiveMemoryIds) > 0 || count($effectiveActiveInstructionIds) > 0 || count($effectiveActiveMcpIds) > 0 || count($effectiveActiveJobIds) > 0;
+
+echo json_encode([
+    'requestId' => $requestId,
+    'thinking' => $effectiveThinking,
+    'gettingAvailTools' => $effectiveGettingAvailTools,
+    'activeToolIds' => $effectiveActiveToolIds,
+    'checkingMemory' => $effectiveCheckingMemory,
+    'checkingInstructions' => $effectiveCheckingInstructions,
+    'checkingMcps' => $effectiveCheckingMcps,
+    'checkingJobs' => $effectiveCheckingJobs,
+    'activeMemoryIds' => $effectiveActiveMemoryIds,
+    'activeInstructionIds' => $effectiveActiveInstructionIds,
+    'activeMcpIds' => $effectiveActiveMcpIds,
+    'activeJobIds' => $effectiveActiveJobIds,
+    'executionDetailsByNode' => $effectiveExecutionDetails,
+    'graphRefreshToken' => isset($data['graphRefreshToken']) ? (string) $data['graphRefreshToken'] : '',
+]);

@@ -1,0 +1,13 @@
+.env
+MemoryGraph.zip
+mcp_servers.json
+memory/*
+!memory/.gitkeep
+instructions/*
+!instructions/.gitkeep
+jobs/*
+!jobs/.gitkeep
+tools/*
+!tools/.gitkeep
+runtime/chat-status/*
+!runtime/chat-status/.gitkeep

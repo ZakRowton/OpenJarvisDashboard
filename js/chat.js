@@ -1,0 +1,433 @@
+/**
+ * Sticky chat: POST to Mercury API via api/chat.php, show response as notification; click opens modal.
+ */
+(function () {
+    var $input = $('#chat-input');
+    var $send = $('#chat-send');
+    var $stop = $('#chat-stop');
+    var $notifications = $('#notifications');
+    var $modalBody = $('#response-modal-body');
+    if (!$input.length || !$send.length) return;
+    var RECENT_ACTIVITY_HOLD_MS = 1800;
+    var fullResponses = {};
+    var modalInstance = null;
+    var statusPollHandle = null;
+    var stopPollingTimeout = null;
+    var currentRequest = null;
+    var wasStopped = false;
+    var lastGraphRefreshToken = '';
+
+    function setRequestUi(active) {
+        $send.prop('disabled', active);
+        if ($stop.length) $stop.prop('disabled', !active).toggle(active);
+    }
+
+    function stopStatusPolling() {
+        if (stopPollingTimeout) {
+            clearTimeout(stopPollingTimeout);
+            stopPollingTimeout = null;
+        }
+        if (statusPollHandle) {
+            clearInterval(statusPollHandle);
+            statusPollHandle = null;
+        }
+        if (typeof window.agentState !== 'undefined') {
+            window.agentState.setGettingAvailTools(false);
+            window.agentState.setCheckingMemory(false);
+            window.agentState.setCheckingInstructions(false);
+            window.agentState.setCheckingMcps(false);
+            window.agentState.setCheckingJobs(false);
+            window.agentState.setActiveToolIds([]);
+            window.agentState.setActiveMemoryIds([]);
+            window.agentState.setActiveInstructionIds([]);
+            window.agentState.setActiveMcpIds([]);
+            window.agentState.setActiveJobIds([]);
+            window.agentState.setExecutionDetailsByNode({});
+        }
+        if (typeof window.MemoryGraphUpdateExecutionPanel === 'function') window.MemoryGraphUpdateExecutionPanel();
+    }
+
+    function startStatusPolling(requestId) {
+        stopStatusPolling();
+        if (!requestId) return;
+        statusPollHandle = setInterval(function () {
+            $.getJSON('api/chat_status.php', { request_id: requestId })
+                .done(function (status) {
+                    var executionDetails = status && status.executionDetailsByNode ? status.executionDetailsByNode : {};
+                    var inferredToolIds = Array.isArray(status.activeToolIds) ? status.activeToolIds.slice() : [];
+                    var inferredMemoryIds = Array.isArray(status.activeMemoryIds) ? status.activeMemoryIds.slice() : [];
+                    var inferredInstructionIds = Array.isArray(status.activeInstructionIds) ? status.activeInstructionIds.slice() : [];
+                    var inferredMcpIds = Array.isArray(status.activeMcpIds) ? status.activeMcpIds.slice() : [];
+                    var inferredJobIds = Array.isArray(status.activeJobIds) ? status.activeJobIds.slice() : [];
+
+                    Object.keys(executionDetails).forEach(function (key) {
+                        if (key.indexOf('tool_') === 0 && inferredToolIds.indexOf(key) === -1) inferredToolIds.push(key);
+                        if (key.indexOf('memory_file_') === 0 && inferredMemoryIds.indexOf(key) === -1) inferredMemoryIds.push(key);
+                        if (key.indexOf('instruction_file_') === 0 && inferredInstructionIds.indexOf(key) === -1) inferredInstructionIds.push(key);
+                        if (key.indexOf('mcp_server_') === 0 && inferredMcpIds.indexOf(key) === -1) inferredMcpIds.push(key);
+                        if (key.indexOf('job_file_') === 0 && inferredJobIds.indexOf(key) === -1) inferredJobIds.push(key);
+                    });
+
+                    var inferredCheckingMcps = !!(status.checkingMcps || inferredMcpIds.length || executionDetails.mcps);
+                    if (typeof window.agentState !== 'undefined') {
+                        window.agentState.setGettingAvailTools(!!status.gettingAvailTools);
+                        window.agentState.setCheckingMemory(!!status.checkingMemory);
+                        window.agentState.setCheckingInstructions(!!status.checkingInstructions);
+                        window.agentState.setCheckingMcps(inferredCheckingMcps);
+                        window.agentState.setCheckingJobs(!!status.checkingJobs);
+                        window.agentState.setActiveToolIds(inferredToolIds);
+                        window.agentState.setActiveMemoryIds(inferredMemoryIds);
+                        window.agentState.setActiveInstructionIds(inferredInstructionIds);
+                        window.agentState.setActiveMcpIds(inferredMcpIds);
+                        window.agentState.setActiveJobIds(inferredJobIds);
+                        window.agentState.setExecutionDetailsByNode(executionDetails);
+                    }
+                    if (status.graphRefreshToken && status.graphRefreshToken !== lastGraphRefreshToken) {
+                        lastGraphRefreshToken = status.graphRefreshToken;
+                        if (typeof window.MemoryGraphRefresh === 'function') window.MemoryGraphRefresh();
+                    }
+                    if (typeof window.MemoryGraphUpdateExecutionPanel === 'function') window.MemoryGraphUpdateExecutionPanel();
+                    if (!status.thinking) {
+                        if (!stopPollingTimeout) {
+                            stopPollingTimeout = setTimeout(function () {
+                                stopStatusPolling();
+                            }, RECENT_ACTIVITY_HOLD_MS);
+                        }
+                    }
+                })
+                .fail(function () {
+                    stopStatusPolling();
+                });
+        }, 120);
+    }
+
+    function buildModalText(promptText, responseText) {
+        var parts = [];
+        parts.push('Prompt:');
+        parts.push(promptText || '');
+        parts.push('');
+        parts.push('Response:');
+        parts.push(responseText || '');
+        return parts.join('\n');
+    }
+
+    function looksLikeHtmlSnippet(code) {
+        if (!code) return false;
+        return /<\/?[a-z][\s\S]*>/i.test(code) || /<script[\s\S]*>/i.test(code) || /<canvas[\s\S]*>/i.test(code);
+    }
+
+    function looksLikeJavaScriptSnippet(code) {
+        if (!code) return false;
+        return /\b(const|let|var|function|document\.|window\.|new\s+[A-Z]|console\.|setTimeout|setInterval)\b/.test(code);
+    }
+
+    function isPreviewableCode(language, code) {
+        var lang = (language || '').toLowerCase();
+        return lang === 'html' || lang === 'htm' || lang === 'javascript' || lang === 'js' || (!lang && (looksLikeHtmlSnippet(code) || looksLikeJavaScriptSnippet(code)));
+    }
+
+    function buildPreviewResizeScript(previewId) {
+        return [
+            '<script>',
+            '(function(){',
+            'var previewId = ' + JSON.stringify(previewId) + ';',
+            'function getHeight(){',
+            'var body = document.body;',
+            'var html = document.documentElement;',
+            'return Math.max(',
+            'body ? body.scrollHeight : 0,',
+            'body ? body.offsetHeight : 0,',
+            'html ? html.scrollHeight : 0,',
+            'html ? html.offsetHeight : 0,',
+            '320',
+            ');',
+            '}',
+            'function notify(){',
+            'try {',
+            'parent.postMessage({ type: "memory-graph-preview-height", previewId: previewId, height: getHeight() }, "*");',
+            '} catch (e) {}',
+            '}',
+            'window.addEventListener("load", notify);',
+            'window.addEventListener("resize", notify);',
+            'if (typeof ResizeObserver !== "undefined") {',
+            'try { new ResizeObserver(notify).observe(document.documentElement); } catch (e) {}',
+            '}',
+            'setTimeout(notify, 50);',
+            'setTimeout(notify, 200);',
+            'setTimeout(notify, 600);',
+            'setTimeout(notify, 1200);',
+            '})();',
+            '<\/script>'
+        ].join('');
+    }
+
+    function injectPreviewResizeScript(doc, previewId) {
+        var script = buildPreviewResizeScript(previewId);
+        if (/<\/body>/i.test(doc)) {
+            return doc.replace(/<\/body>/i, script + '</body>');
+        }
+        return doc + script;
+    }
+
+    function buildPreviewDocument(language, code, previewId) {
+        var lang = (language || '').toLowerCase();
+        var body = code || '';
+        if (lang === 'javascript' || lang === 'js' || (!looksLikeHtmlSnippet(body) && looksLikeJavaScriptSnippet(body))) {
+            body = [
+                '<!DOCTYPE html>',
+                '<html lang="en">',
+                '<head>',
+                '<meta charset="UTF-8">',
+                '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+                '<title>Preview</title>',
+                '<style>',
+                'html, body { margin: 0; padding: 0; overflow: hidden; }',
+                'body { padding: 16px; background: #0a0a0a; color: #f9f1d8; font-family: Georgia, serif; }',
+                'canvas { max-width: 100%; height: auto !important; }',
+                '</style>',
+                '</head>',
+                '<body>',
+                '<div id="app"></div>',
+                '<script>',
+                body,
+                '<\/script>',
+                '</body>',
+                '</html>'
+            ].join('');
+        } else if (!/<!DOCTYPE html/i.test(body) && !/<html[\s>]/i.test(body)) {
+            body = [
+                '<!DOCTYPE html>',
+                '<html lang="en">',
+                '<head>',
+                '<meta charset="UTF-8">',
+                '<meta name="viewport" content="width=device-width, initial-scale=1.0">',
+                '<title>Preview</title>',
+                '<style>',
+                'html, body { margin: 0; padding: 0; overflow: hidden; }',
+                'body { padding: 16px; background: #0a0a0a; color: #f9f1d8; font-family: Georgia, serif; }',
+                'canvas { max-width: 100%; height: auto !important; }',
+                '</style>',
+                '</head>',
+                '<body>',
+                body,
+                '</body>',
+                '</html>'
+            ].join('');
+        }
+        return injectPreviewResizeScript(body, previewId);
+    }
+
+    function ensurePreviewResizeListener() {
+        if (window.__memoryGraphPreviewResizeBound) return;
+        window.__memoryGraphPreviewResizeBound = true;
+        window.addEventListener('message', function (event) {
+            var data = event && event.data;
+            if (!data || data.type !== 'memory-graph-preview-height' || !data.previewId) return;
+            var frame = document.querySelector('iframe[data-preview-id="' + data.previewId + '"]');
+            if (!frame) return;
+            var height = Math.max(320, parseInt(data.height, 10) || 320);
+            frame.style.height = height + 'px';
+        });
+    }
+
+    function appendTextBlock($container, text) {
+        if (!text) return;
+        var cleaned = text.replace(/^\s+|\s+$/g, '');
+        if (!cleaned) return;
+        $('<div class="response-modal-text">').text(cleaned).appendTo($container);
+    }
+
+    function appendCodeBlock($container, language, code) {
+        var label = language ? language.toUpperCase() : 'CODE';
+        var $block = $('<div class="response-modal-code-block">');
+        $('<div class="response-modal-code-label">').text(label).appendTo($block);
+        $('<pre class="response-modal-code"><code></code></pre>')
+            .find('code')
+            .text(code || '')
+            .end()
+            .appendTo($block);
+
+        if (isPreviewableCode(language, code)) {
+            var previewId = 'preview-' + Date.now() + '-' + Math.floor(Math.random() * 100000);
+            ensurePreviewResizeListener();
+            $('<div class="response-modal-preview-label">').text('Preview').appendTo($block);
+            $('<iframe class="response-modal-preview-frame" sandbox="allow-scripts allow-modals"></iframe>')
+                .attr('data-preview-id', previewId)
+                .attr('scrolling', 'no')
+                .attr('srcdoc', buildPreviewDocument(language, code, previewId))
+                .appendTo($block);
+        }
+
+        $container.append($block);
+    }
+
+    function renderResponseContent($container, responseText) {
+        var text = responseText || '';
+        var codeBlockRegex = /```([a-zA-Z0-9_-]+)?\r?\n([\s\S]*?)```/g;
+        var lastIndex = 0;
+        var hasMatches = false;
+        var match;
+
+        while ((match = codeBlockRegex.exec(text)) !== null) {
+            hasMatches = true;
+            appendTextBlock($container, text.slice(lastIndex, match.index));
+            appendCodeBlock($container, match[1] || '', match[2] || '');
+            lastIndex = codeBlockRegex.lastIndex;
+        }
+
+        if (hasMatches) {
+            appendTextBlock($container, text.slice(lastIndex));
+            return;
+        }
+
+        if (looksLikeHtmlSnippet(text)) {
+            appendCodeBlock($container, 'html', text);
+            return;
+        }
+
+        appendTextBlock($container, text);
+    }
+
+    function renderModalContent(promptText, responseText) {
+        if (!$modalBody.length) return;
+        $modalBody.empty();
+
+        $('<div class="response-modal-section-title">').text('Prompt').appendTo($modalBody);
+        $('<div class="response-modal-text response-modal-prompt">').text(promptText || '').appendTo($modalBody);
+        $('<div class="response-modal-section-title">').text('Response').appendTo($modalBody);
+        renderResponseContent($modalBody, responseText || '');
+    }
+
+    function openResponseModal(promptText, responseText) {
+        renderModalContent(promptText, responseText);
+        if (typeof bootstrap !== 'undefined' && bootstrap.Modal) {
+            if (modalInstance) modalInstance.show();
+            else {
+                var modalEl = document.getElementById('response-modal');
+                if (modalEl) {
+                    modalInstance = new bootstrap.Modal(modalEl);
+                    modalInstance.show();
+                }
+            }
+        }
+    }
+
+    function showNotification(preview, promptText, responseText) {
+        var id = 'notif-' + Date.now();
+        fullResponses[id] = {
+            prompt: promptText || '',
+            response: responseText || ''
+        };
+        var $el = $('<div class="notification" data-id="' + id + '">')
+            .html('<div class="preview">' + escapeHtml(preview) + '</div>');
+        $notifications.append($el);
+        $el.on('click', function () {
+            var tid = $(this).attr('data-id');
+            var payload = fullResponses[tid] !== undefined ? fullResponses[tid] : { prompt: '', response: '' };
+            openResponseModal(payload.prompt, payload.response);
+        });
+        setTimeout(function () {
+            $el.fadeOut(300, function () { delete fullResponses[id]; $(this).remove(); });
+        }, 12000);
+    }
+
+    function escapeHtml(s) {
+        if (!s) return '';
+        var div = document.createElement('div');
+        div.textContent = s;
+        return div.innerHTML;
+    }
+
+    window.MemoryGraphShowResponseModal = openResponseModal;
+
+    function sendMessage() {
+        var text = ($input.val() || '').trim();
+        if (!text) return;
+        wasStopped = false;
+        setRequestUi(true);
+        $input.val('');
+
+        var settings = (typeof window.getAgentSettings === 'function' && window.getAgentSettings()) || {};
+        var messages = [];
+        if (settings.systemPrompt) {
+            messages.push({ role: 'system', content: settings.systemPrompt });
+        }
+        messages.push({ role: 'user', content: text });
+        var requestId = 'chat_' + Date.now() + '_' + Math.floor(Math.random() * 100000);
+        lastGraphRefreshToken = '';
+
+        if (typeof window.agentState !== 'undefined') window.agentState.setThinking(true);
+        startStatusPolling(requestId);
+
+        currentRequest = $.ajax({
+            url: 'api/chat.php',
+            method: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({
+                requestId: requestId,
+                provider: settings.provider || 'mercury',
+                model: settings.model || 'mercury-2',
+                systemPrompt: settings.systemPrompt || '',
+                temperature: settings.temperature != null ? settings.temperature : 0.7,
+                messages: messages
+            })
+        })
+            .done(function (res) {
+                if (wasStopped) return;
+                var content = '';
+                if (res && res.choices && res.choices[0] && res.choices[0].message)
+                    content = res.choices[0].message.content || '';
+                else if (typeof res === 'string') content = res;
+                var preview = content.length > 120 ? content.slice(0, 120) + '…' : content;
+                showNotification(preview || 'No text in response.', text, content);
+            })
+            .fail(function (xhr) {
+                if (wasStopped || (xhr && xhr.statusText === 'abort')) return;
+                var msg = (xhr.responseJSON && xhr.responseJSON.error) || xhr.statusText || 'Request failed';
+                if ((!msg || msg === 'OK') && xhr && xhr.responseText) {
+                    try {
+                        var parsed = JSON.parse(xhr.responseText);
+                        msg = parsed.error || xhr.responseText;
+                    } catch (e) {
+                        msg = xhr.responseText;
+                    }
+                }
+                showNotification(msg, text, 'Error: ' + msg);
+            })
+            .always(function () {
+                currentRequest = null;
+                if (typeof window.agentState !== 'undefined') window.agentState.setThinking(false);
+                if (wasStopped) {
+                    stopStatusPolling();
+                } else if (!stopPollingTimeout) {
+                    stopPollingTimeout = setTimeout(function () {
+                        stopStatusPolling();
+                    }, RECENT_ACTIVITY_HOLD_MS);
+                }
+                if (typeof window.MemoryGraphRefresh === 'function') window.MemoryGraphRefresh();
+                setRequestUi(false);
+                $input.focus();
+            });
+    }
+
+    $send.on('click', sendMessage);
+    if ($stop.length) {
+        $stop.on('click', function () {
+            if (!currentRequest) return;
+            wasStopped = true;
+            currentRequest.abort();
+            currentRequest = null;
+            if (typeof window.agentState !== 'undefined') window.agentState.setThinking(false);
+            stopStatusPolling();
+            setRequestUi(false);
+            $input.focus();
+        });
+        $stop.hide().prop('disabled', true);
+    }
+    $input.on('keydown', function (e) {
+        if (e.key === 'Enter' && !e.shiftKey) {
+            e.preventDefault();
+            sendMessage();
+        }
+    });
+})();
