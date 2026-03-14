@@ -22,6 +22,15 @@
         if ($stop.length) $stop.prop('disabled', !active).toggle(active);
     }
 
+    function signalGraphActivity(sections, nodeIds, durationMs) {
+        if (typeof window.MemoryGraphSignalActivity !== 'function') return;
+        window.MemoryGraphSignalActivity({
+            sections: Array.isArray(sections) ? sections : [],
+            nodeIds: Array.isArray(nodeIds) ? nodeIds : [],
+            durationMs: durationMs || 2400
+        });
+    }
+
     function stopStatusPolling() {
         if (stopPollingTimeout) {
             clearTimeout(stopPollingTimeout);
@@ -32,6 +41,7 @@
             statusPollHandle = null;
         }
         if (typeof window.agentState !== 'undefined') {
+            window.agentState.setThinking(false);
             window.agentState.setGettingAvailTools(false);
             window.agentState.setCheckingMemory(false);
             window.agentState.setCheckingInstructions(false);
@@ -43,62 +53,88 @@
             window.agentState.setActiveMcpIds([]);
             window.agentState.setActiveJobIds([]);
             window.agentState.setExecutionDetailsByNode({});
+            if (typeof window.agentState.setMemoryToolExecuting === 'function') window.agentState.setMemoryToolExecuting(false);
+            if (typeof window.agentState.setToolExecuting === 'function') window.agentState.setToolExecuting(false);
+            if (typeof window.agentState.setInstructionToolExecuting === 'function') window.agentState.setInstructionToolExecuting(false);
+            if (typeof window.agentState.setAccessingMemoryFile === 'function') window.agentState.setAccessingMemoryFile(false);
         }
         if (typeof window.MemoryGraphUpdateExecutionPanel === 'function') window.MemoryGraphUpdateExecutionPanel();
+    }
+
+    function applyStatusSnapshot(status) {
+        if (status && status.fileExists === false) return;
+        var executionDetails = status && status.executionDetailsByNode ? status.executionDetailsByNode : {};
+        var inferredToolIds = Array.isArray(status.activeToolIds) ? status.activeToolIds.slice() : [];
+        var inferredMemoryIds = Array.isArray(status.activeMemoryIds) ? status.activeMemoryIds.slice() : [];
+        var inferredInstructionIds = Array.isArray(status.activeInstructionIds) ? status.activeInstructionIds.slice() : [];
+        var inferredMcpIds = Array.isArray(status.activeMcpIds) ? status.activeMcpIds.slice() : [];
+        var inferredJobIds = Array.isArray(status.activeJobIds) ? status.activeJobIds.slice() : [];
+
+        Object.keys(executionDetails).forEach(function (key) {
+            if (key.indexOf('tool_') === 0 && inferredToolIds.indexOf(key) === -1) inferredToolIds.push(key);
+            if (key.indexOf('memory_file_') === 0 && inferredMemoryIds.indexOf(key) === -1) inferredMemoryIds.push(key);
+            if (key.indexOf('instruction_file_') === 0 && inferredInstructionIds.indexOf(key) === -1) inferredInstructionIds.push(key);
+            if (key.indexOf('mcp_server_') === 0 && inferredMcpIds.indexOf(key) === -1) inferredMcpIds.push(key);
+            if (key.indexOf('job_file_') === 0 && inferredJobIds.indexOf(key) === -1) inferredJobIds.push(key);
+        });
+
+        var inferredCheckingMcps = !!(status.checkingMcps || inferredMcpIds.length || executionDetails.mcps);
+        var inferredToolExecution = !!(status.gettingAvailTools || inferredToolIds.length || executionDetails.tools);
+        var inferredMemoryExecution = !!(status.checkingMemory || inferredMemoryIds.length || executionDetails.memory);
+        var inferredInstructionExecution = !!(status.checkingInstructions || inferredInstructionIds.length || executionDetails.instructions);
+        var inferredJobExecution = !!(status.checkingJobs || inferredJobIds.length || executionDetails.jobs);
+        var memoryActive = !!(status.checkingMemory || inferredMemoryIds.length > 0 || status.memoryToolExecuting || status.isAccessingMemoryFile);
+        var durationMs = memoryActive && inferredMemoryIds.length > 0 ? 4500 : (status.thinking ? 2600 : 2200);
+        if (typeof window.agentState !== 'undefined' && typeof window.agentState.applySnapshotFromStatus === 'function') {
+            window.agentState.applySnapshotFromStatus({
+                thinking: !!status.thinking,
+                gettingAvailTools: !!status.gettingAvailTools,
+                checkingMemory: !!status.checkingMemory,
+                checkingInstructions: !!status.checkingInstructions,
+                checkingMcps: inferredCheckingMcps,
+                checkingJobs: !!status.checkingJobs,
+                activeToolIds: inferredToolIds,
+                activeMemoryIds: inferredMemoryIds,
+                activeInstructionIds: inferredInstructionIds,
+                activeMcpIds: inferredMcpIds,
+                activeJobIds: inferredJobIds,
+                executionDetailsByNode: executionDetails,
+                isAccessingMemoryFile: !!(status.isAccessingMemoryFile || memoryActive),
+                durationMs: durationMs
+            });
+        }
+        if (status.graphRefreshToken && status.graphRefreshToken !== lastGraphRefreshToken) {
+            lastGraphRefreshToken = status.graphRefreshToken;
+            if (typeof window.MemoryGraphRefresh === 'function') window.MemoryGraphRefresh();
+        }
+        if (typeof window.MemoryGraphUpdateExecutionPanel === 'function') window.MemoryGraphUpdateExecutionPanel();
+        if (!status.thinking && !stopPollingTimeout) {
+            stopPollingTimeout = setTimeout(function () {
+                stopStatusPolling();
+            }, RECENT_ACTIVITY_HOLD_MS);
+        }
+    }
+
+    function pollStatusSnapshot(requestId, ignoreFailure) {
+        if (!requestId) return;
+        $.getJSON('api/chat_status.php', { request_id: requestId })
+            .done(function (status) {
+                applyStatusSnapshot(status || {});
+            })
+            .fail(function () {
+                if (!ignoreFailure) {
+                    stopStatusPolling();
+                }
+            });
     }
 
     function startStatusPolling(requestId) {
         stopStatusPolling();
         if (!requestId) return;
+        pollStatusSnapshot(requestId, true);
         statusPollHandle = setInterval(function () {
-            $.getJSON('api/chat_status.php', { request_id: requestId })
-                .done(function (status) {
-                    var executionDetails = status && status.executionDetailsByNode ? status.executionDetailsByNode : {};
-                    var inferredToolIds = Array.isArray(status.activeToolIds) ? status.activeToolIds.slice() : [];
-                    var inferredMemoryIds = Array.isArray(status.activeMemoryIds) ? status.activeMemoryIds.slice() : [];
-                    var inferredInstructionIds = Array.isArray(status.activeInstructionIds) ? status.activeInstructionIds.slice() : [];
-                    var inferredMcpIds = Array.isArray(status.activeMcpIds) ? status.activeMcpIds.slice() : [];
-                    var inferredJobIds = Array.isArray(status.activeJobIds) ? status.activeJobIds.slice() : [];
-
-                    Object.keys(executionDetails).forEach(function (key) {
-                        if (key.indexOf('tool_') === 0 && inferredToolIds.indexOf(key) === -1) inferredToolIds.push(key);
-                        if (key.indexOf('memory_file_') === 0 && inferredMemoryIds.indexOf(key) === -1) inferredMemoryIds.push(key);
-                        if (key.indexOf('instruction_file_') === 0 && inferredInstructionIds.indexOf(key) === -1) inferredInstructionIds.push(key);
-                        if (key.indexOf('mcp_server_') === 0 && inferredMcpIds.indexOf(key) === -1) inferredMcpIds.push(key);
-                        if (key.indexOf('job_file_') === 0 && inferredJobIds.indexOf(key) === -1) inferredJobIds.push(key);
-                    });
-
-                    var inferredCheckingMcps = !!(status.checkingMcps || inferredMcpIds.length || executionDetails.mcps);
-                    if (typeof window.agentState !== 'undefined') {
-                        window.agentState.setGettingAvailTools(!!status.gettingAvailTools);
-                        window.agentState.setCheckingMemory(!!status.checkingMemory);
-                        window.agentState.setCheckingInstructions(!!status.checkingInstructions);
-                        window.agentState.setCheckingMcps(inferredCheckingMcps);
-                        window.agentState.setCheckingJobs(!!status.checkingJobs);
-                        window.agentState.setActiveToolIds(inferredToolIds);
-                        window.agentState.setActiveMemoryIds(inferredMemoryIds);
-                        window.agentState.setActiveInstructionIds(inferredInstructionIds);
-                        window.agentState.setActiveMcpIds(inferredMcpIds);
-                        window.agentState.setActiveJobIds(inferredJobIds);
-                        window.agentState.setExecutionDetailsByNode(executionDetails);
-                    }
-                    if (status.graphRefreshToken && status.graphRefreshToken !== lastGraphRefreshToken) {
-                        lastGraphRefreshToken = status.graphRefreshToken;
-                        if (typeof window.MemoryGraphRefresh === 'function') window.MemoryGraphRefresh();
-                    }
-                    if (typeof window.MemoryGraphUpdateExecutionPanel === 'function') window.MemoryGraphUpdateExecutionPanel();
-                    if (!status.thinking) {
-                        if (!stopPollingTimeout) {
-                            stopPollingTimeout = setTimeout(function () {
-                                stopStatusPolling();
-                            }, RECENT_ACTIVITY_HOLD_MS);
-                        }
-                    }
-                })
-                .fail(function () {
-                    stopStatusPolling();
-                });
-        }, 120);
+            pollStatusSnapshot(requestId, false);
+        }, 100);
     }
 
     function buildModalText(promptText, responseText) {
@@ -392,11 +428,16 @@
                         msg = xhr.responseText;
                     }
                 }
-                showNotification(msg, text, 'Error: ' + msg);
+                if (msg && typeof msg === 'object') {
+                    msg = (msg.message !== undefined && typeof msg.message === 'string') ? msg.message : JSON.stringify(msg);
+                }
+                var displayMsg = (msg && String(msg).trim()) || 'Request failed';
+                showNotification(displayMsg, text, 'Error: ' + displayMsg);
             })
             .always(function () {
                 currentRequest = null;
                 if (typeof window.agentState !== 'undefined') window.agentState.setThinking(false);
+                pollStatusSnapshot(requestId, true);
                 if (wasStopped) {
                     stopStatusPolling();
                 } else if (!stopPollingTimeout) {

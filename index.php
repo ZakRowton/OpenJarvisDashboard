@@ -622,6 +622,11 @@
                 <textarea id="memory-content-input" class="provider-textarea" rows="10" placeholder="Memory file contents..."></textarea>
                 <button type="button" id="memory-save-btn" class="panel-action-btn">Save Memory</button>
             </div>
+            <div id="instruction-config-panel" style="display: none; margin-top: 15px;">
+                <label class="provider-label">Instruction Contents</label>
+                <textarea id="instruction-content-input" class="provider-textarea" rows="10" placeholder="Instruction file contents..."></textarea>
+                <button type="button" id="instruction-save-btn" class="panel-action-btn">Save Instruction</button>
+            </div>
             <div id="mcps-parent-panel" style="display: none; margin-top: 15px;">
                 <div class="panel-action-btn-row">
                     <button type="button" id="mcp-new-btn" class="panel-action-btn">New MCP</button>
@@ -770,6 +775,9 @@
         var toolConfig = document.getElementById('tool-config-panel');
         var toolsParentPanel = document.getElementById('tools-parent-panel');
         var memoryConfig = document.getElementById('memory-config-panel');
+        var instructionConfig = document.getElementById('instruction-config-panel');
+        var instructionContentInput = document.getElementById('instruction-content-input');
+        var instructionSaveBtn = document.getElementById('instruction-save-btn');
         var mcpsParentPanel = document.getElementById('mcps-parent-panel');
         var mcpConfig = document.getElementById('mcp-config-panel');
         var jobConfig = document.getElementById('job-config-panel');
@@ -822,11 +830,13 @@
             if (toolConfig) toolConfig.style.display = 'none';
             if (toolsParentPanel) toolsParentPanel.style.display = 'none';
             if (memoryConfig) memoryConfig.style.display = 'none';
+            if (instructionConfig) instructionConfig.style.display = 'none';
             if (mcpsParentPanel) mcpsParentPanel.style.display = 'none';
             if (mcpConfig) mcpConfig.style.display = 'none';
             if (jobConfig) jobConfig.style.display = 'none';
             window.currentOpenedTool = null;
             window.currentOpenedMemory = null;
+            window.currentOpenedInstruction = null;
             window.currentOpenedMcp = null;
             window.currentOpenedJob = null;
         }
@@ -1117,6 +1127,25 @@
                 });
         }
 
+        function loadInstructionIntoPanel(name) {
+            fetch('api_instructions.php?action=get&name=' + encodeURIComponent(name))
+                .then(function (res) {
+                    if (!res.ok) throw new Error('Instruction not found');
+                    return res.json();
+                })
+                .then(function (instruction) {
+                    if (!window.currentOpenedInstruction || window.currentOpenedInstruction.name !== instruction.name) return;
+                    if (instructionContentInput) instructionContentInput.value = instruction.content || '';
+                    infoEl.innerHTML = '<p class="mb-1"><strong>Instruction:</strong> ' + escapeHtml(instruction.name) + '</p>';
+                })
+                .catch(function () {
+                    if (instructionContentInput) instructionContentInput.value = '';
+                    if (window.currentOpenedInstruction && window.currentOpenedInstruction.name === name) {
+                        infoEl.innerHTML = '<p class="mb-1"><strong>Instruction:</strong> ' + escapeHtml(name) + '</p><p class="mb-1 text-muted">Could not load contents.</p>';
+                    }
+                });
+        }
+
         function loadMcpTools(name) {
             if (!mcpToolsDisplay) return;
             mcpToolsDisplay.textContent = 'Loading MCP tools...';
@@ -1216,6 +1245,19 @@
                     if (memorySwitchEl) memorySwitchEl.checked = memory ? !!memory.active : true;
                     if (memoryContentInput) memoryContentInput.value = '';
                     loadMemoryIntoPanel(memoryName);
+                }
+            } else if (id && id.indexOf('instruction_file_') === 0) {
+                var instruction = (window.instructionFiles || []).find(function (i) { return i.nodeId === id; });
+                var instructionName = instruction ? instruction.name : refName;
+                infoEl.innerHTML = '<p class="mb-1"><strong>Instruction:</strong> ' + escapeHtml(instructionName) + '</p>';
+                if (instructionConfig) {
+                    instructionConfig.style.display = 'block';
+                    window.currentOpenedInstruction = {
+                        id: id,
+                        name: instructionName
+                    };
+                    if (instructionContentInput) instructionContentInput.value = '';
+                    loadInstructionIntoPanel(instructionName);
                 }
             } else if (id && id.indexOf('mcp_server_') === 0) {
                 var server = (window.mcpServers || []).find(function (item) { return item.nodeId === id; });
@@ -1376,6 +1418,40 @@
                     refreshGraph();
                 }).finally(function () {
                     memorySaveBtn.disabled = false;
+                });
+            });
+        }
+        if (instructionSaveBtn) {
+            instructionSaveBtn.addEventListener('click', function () {
+                if (!window.currentOpenedInstruction || !instructionContentInput) return;
+                instructionSaveBtn.disabled = true;
+                fetch('api_instructions.php?action=save', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        name: window.currentOpenedInstruction.name,
+                        content: instructionContentInput.value
+                    })
+                }).then(function (res) { return res.json(); })
+                .then(function (instruction) {
+                    if (instruction && instruction.error) throw new Error(instruction.error);
+                    if (window.instructionFiles) {
+                        var found = false;
+                        window.instructionFiles.forEach(function (item) {
+                            if (item.name === instruction.name) {
+                                item.title = instruction.title;
+                                item.nodeId = instruction.nodeId;
+                                found = true;
+                            }
+                        });
+                        if (!found) window.instructionFiles.push(instruction);
+                    }
+                    infoEl.innerHTML = '<p class="mb-1"><strong>Instruction:</strong> ' + escapeHtml(instruction.name) + '</p><p class="mb-1">Saved.</p>';
+                    refreshGraph();
+                }).catch(function (err) {
+                    infoEl.innerHTML = '<p class="mb-1"><strong>Instruction:</strong> ' + escapeHtml(window.currentOpenedInstruction.name) + '</p><p class="mb-1 text-danger">' + escapeHtml(err && err.message ? err.message : 'Save failed') + '</p>';
+                }).finally(function () {
+                    instructionSaveBtn.disabled = false;
                 });
             });
         }

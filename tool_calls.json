@@ -1,3 +1,77 @@
 {
-    "tools": []
+    "tools": [
+        {
+            "name": "display_table",
+            "description": "Generates an HTML table with optional styling and a caption for displaying data in a cell format view.",
+            "active": true,
+            "parameters": {
+                "properties": {
+                    "caption": {
+                        "description": "Optional caption title for the table.",
+                        "type": "string"
+                    },
+                    "headers": {
+                        "description": "List of column header names.",
+                        "items": {
+                            "type": "string"
+                        },
+                        "type": "array"
+                    },
+                    "rows": {
+                        "description": "List of rows, each row is an array of cell values.",
+                        "items": {
+                            "items": {
+                                "type": "string"
+                            },
+                            "type": "array"
+                        },
+                        "type": "array"
+                    },
+                    "style": {
+                        "description": "Optional CSS style string to apply to the table element.",
+                        "type": "string"
+                    }
+                },
+                "required": [
+                    "headers",
+                    "rows"
+                ],
+                "type": "object"
+            }
+        },
+        {
+            "name": "brave_search",
+            "description": "Search the web using Brave Search API. Returns raw JSON response.",
+            "active": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query string."
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            }
+        },
+        {
+            "name": "exec_terminal",
+            "description": "Execute a terminal command on the server and return its output.",
+            "active": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The shell command to execute."
+                    }
+                },
+                "required": [
+                    "command"
+                ]
+            }
+        }
+    ]
 }

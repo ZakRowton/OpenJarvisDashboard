@@ -110,7 +110,7 @@ function markExecutionStatus(array &$status, string $requestId, bool $gettingAva
     $status['lastActiveMcpIds'] = array_values($activeMcpIds);
     $status['lastActiveJobIds'] = array_values($activeJobIds);
     $status['lastExecutionDetailsByNode'] = $executionDetailsByNode;
-    $status['lastEventExpiresAtMs'] = (int) round(microtime(true) * 1000) + 2600;
+    $status['lastEventExpiresAtMs'] = (int) round(microtime(true) * 1000) + 5500;
     writeStatus($requestId, $status);
 }
 
@@ -351,6 +351,17 @@ function buildExecutionStateForToolCall(string $toolName, array $arguments, arra
             ];
         }
     }
+    if (in_array($normalizedFunctionName, ['add_memory_file', 'create_memory_file', 'update_memory_file', 'delete_memory_file'], true) && !empty($arguments['name'])) {
+        $memoryMeta = get_memory_meta((string) $arguments['name']);
+        $memoryNodeId = $memoryMeta !== null ? $memoryMeta['nodeId'] : memory_node_id((string) $arguments['name']);
+        if (!in_array($memoryNodeId, $activeMemoryIds, true)) {
+            $activeMemoryIds[] = $memoryNodeId;
+        }
+        $executionDetails[$memoryNodeId] = [
+            'toolName' => $normalizedFunctionName,
+            'arguments' => $arguments,
+        ];
+    }
     if ($normalizedFunctionName === 'read_instruction_file') {
         $instructionMeta = get_instruction_meta((string) ($arguments['name'] ?? ''));
         if ($instructionMeta !== null) {
@@ -434,6 +445,14 @@ function normalizeToolName(string $name): string {
         'temp' => 'get_temperature',
         'temperature' => 'get_temperature',
         'list_all_memory_files' => 'list_memory_files',
+        'list_all_memory' => 'list_memory_files',
+        'list_memory' => 'list_memory_files',
+        'get_memory' => 'read_memory_file',
+        'modify_memory_file' => 'update_memory_file',
+        'list_instructions' => 'list_instruction_files',
+        'get_instruction' => 'read_instruction_file',
+        'list_tool' => 'list_available_tools',
+        'get_tool' => 'list_available_tools',
     ];
     return $aliases[$name] ?? $name;
 }
@@ -758,13 +777,51 @@ function normalizeConversation(array $messages, string $systemPrompt, string $pr
             continue;
         }
         $role = $message['role'] ?? 'user';
-        $content = isset($message['content']) ? (string) $message['content'] : '';
+        $content = $message['content'] ?? '';
+        if (!is_string($content)) {
+            $content = $content === null || $content === false ? '' : json_encode($content);
+        }
+        $content = (string) $content;
         if ($role === 'system') {
             continue;
         }
-        $conversation[] = ['role' => $role, 'content' => $content];
+        $entry = ['role' => $role, 'content' => $content];
+        if (isset($message['tool_calls']) && is_array($message['tool_calls'])) {
+            $entry['tool_calls'] = $message['tool_calls'];
+        }
+        if ($role === 'tool' && isset($message['tool_call_id'])) {
+            $entry['tool_call_id'] = $message['tool_call_id'];
+            $entry['name'] = $message['name'] ?? '';
+        }
+        $conversation[] = $entry;
     }
     return $conversation;
+}
+
+/** Ensure every message has string content for OpenAI-compatible APIs (avoids "Input should be a valid string"). */
+function sanitizeConversationForApi(array $conversation): array {
+    $out = [];
+    foreach ($conversation as $msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+        $role = $msg['role'] ?? 'user';
+        $content = $msg['content'] ?? '';
+        if (!is_string($content)) {
+            $content = ($content === null || $content === false) ? '' : json_encode($content);
+        }
+        $content = (string) $content;
+        $entry = ['role' => $role, 'content' => $content];
+        if (isset($msg['tool_calls']) && is_array($msg['tool_calls'])) {
+            $entry['tool_calls'] = $msg['tool_calls'];
+        }
+        if ($role === 'tool') {
+            $entry['tool_call_id'] = $msg['tool_call_id'] ?? '';
+            $entry['name'] = $msg['name'] ?? '';
+        }
+        $out[] = $entry;
+    }
+    return $out;
 }
 
 function requestOpenAiCompatible(array $provider, string $model, array $conversation, float $temperature, array $tools): array {
@@ -867,30 +924,6 @@ $systemPrompt = isset($input['systemPrompt']) ? (string) $input['systemPrompt'] 
 $temperature = isset($input['temperature']) ? (float) $input['temperature'] : 0.7;
 $requestId = sanitizeRequestId(isset($input['requestId']) ? (string) $input['requestId'] : null);
 
-if (empty($messages)) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Missing messages']);
-    exit;
-}
-if (!isset($providers[$providerKey])) {
-    http_response_code(400);
-    echo json_encode(['error' => 'Unknown provider']);
-    exit;
-}
-
-$provider = $providers[$providerKey];
-if (($provider['apiKey'] ?? '') === '') {
-    http_response_code(500);
-    echo json_encode(['error' => 'Missing API key for provider "' . $providerKey . '". Set it in .env.']);
-    exit;
-}
-$modelId = $model ?: $provider['defaultModel'];
-$activeTools = loadToolRegistry();
-$openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
-$effectiveSystemPrompt = trim(($systemPrompt !== '' ? $systemPrompt . "\n\n" : '') . buildToolUsageInstruction($activeTools));
-$conversation = normalizeConversation($messages, $effectiveSystemPrompt, $provider['type']);
-$finalContent = '';
-$loopCount = 0;
 $status = [
     'requestId' => $requestId,
     'thinking' => true,
@@ -921,6 +954,34 @@ $status = [
 ];
 writeStatus($requestId, $status);
 
+if (empty($messages)) {
+    http_response_code(400);
+    echo json_encode(['error' => 'Missing messages']);
+    exit;
+}
+if (!isset($providers[$providerKey])) {
+    http_response_code(400);
+    echo json_encode(['error' => 'Unknown provider']);
+    exit;
+}
+
+$provider = $providers[$providerKey];
+if (($provider['apiKey'] ?? '') === '') {
+    http_response_code(500);
+    echo json_encode(['error' => 'Missing API key for provider "' . $providerKey . '". Set it in .env.']);
+    exit;
+}
+$modelId = $model ?: $provider['defaultModel'];
+$activeTools = loadToolRegistry();
+$openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+$effectiveSystemPrompt = trim(($systemPrompt !== '' ? $systemPrompt . "\n\n" : '') . buildToolUsageInstruction($activeTools));
+$conversation = normalizeConversation($messages, $effectiveSystemPrompt, $provider['type']);
+$finalContent = '';
+$loopCount = 0;
+
+$apiRetryCount = 0;
+$apiErrorRetryMax = 3;
+
 while (true) {
     $loopCount++;
     if ($loopCount > 25) {
@@ -928,17 +989,37 @@ while (true) {
         break;
     }
 
+    $conversationToSend = sanitizeConversationForApi($conversation);
     $result = $provider['type'] === 'gemini'
-        ? requestGemini($provider, $modelId, $conversation, $temperature, $effectiveSystemPrompt)
-        : requestOpenAiCompatible($provider, $modelId, $conversation, $temperature, $openAiTools);
+        ? requestGemini($provider, $modelId, $conversationToSend, $temperature, $effectiveSystemPrompt)
+        : requestOpenAiCompatible($provider, $modelId, $conversationToSend, $temperature, $openAiTools);
 
     if (isset($result['error'])) {
+        $rawBody = isset($result['raw']) ? $result['raw'] : '';
+        $isValidationError = ($rawBody !== '' && (stripos($rawBody, 'invalid_request_error') !== false || stripos($rawBody, 'Input should be a valid string') !== false || stripos($rawBody, 'Input should be a valid list') !== false))
+            || (is_array($result['error']) && isset($result['error']['type']) && (strpos((string) $result['error']['type'], 'invalid') !== false));
+        if ($isValidationError && $apiRetryCount < $apiErrorRetryMax) {
+            $apiRetryCount++;
+            $conversation = sanitizeConversationForApi($conversation);
+            continue;
+        }
         clearStatusFlags($status);
         writeStatus($requestId, $status);
         http_response_code($result['httpCode'] ?? 502);
-        echo is_string($result['error']) && isset($result['raw']) ? $result['raw'] : json_encode(['error' => $result['error']]);
+        if (isset($result['raw'])) {
+            echo $result['raw'];
+        } else {
+            $err = $result['error'];
+            if (is_array($err) || is_object($err)) {
+                $err = isset($err['message']) ? (string) $err['message'] : json_encode($err);
+            } else {
+                $err = (string) $err;
+            }
+            echo json_encode(['error' => $err]);
+        }
         exit;
     }
+    $apiRetryCount = 0;
 
     $data = $result['data'];
 
@@ -952,7 +1033,19 @@ while (true) {
             exit;
         }
 
-        $assistantContent = isset($message['content']) ? (string) $message['content'] : '';
+        $rawContent = $message['content'] ?? null;
+        if (is_array($rawContent)) {
+            $assistantContent = '';
+            foreach ($rawContent as $part) {
+                if (is_array($part) && isset($part['type'], $part['text']) && $part['type'] === 'text') {
+                    $assistantContent .= (string) $part['text'];
+                }
+            }
+        } elseif ($rawContent === null || $rawContent === false) {
+            $assistantContent = '';
+        } else {
+            $assistantContent = (string) $rawContent;
+        }
         $toolCalls = $message['tool_calls'] ?? [];
 
         if (!empty($toolCalls) && is_array($toolCalls)) {
@@ -983,11 +1076,11 @@ while (true) {
                     $executionState['activeJobIds'],
                     $executionState['executionDetails']
                 );
+                usleep(120000);
                 $toolResult = executeToolCall($functionName, $arguments, $activeTools);
                 if (shouldRefreshGraphForToolResult($normalizedFunctionName, is_array($toolResult) ? $toolResult : [])) {
                     queueGraphRefresh($status, $requestId);
                 }
-                clearCurrentExecutionStatus($status, $requestId);
                 if (!empty($toolResult['__disabled'])) {
                     $finalContent = 'That tool has been disabled for me, please enable it if you want me to use that tool.';
                     break 2;
@@ -1026,11 +1119,11 @@ while (true) {
                 $executionState['activeJobIds'],
                 $executionState['executionDetails']
             );
+            usleep(45000);
             $toolResult = executeToolCall($inlineToolCall['name'], $inlineToolCall['arguments'], $activeTools);
             if (shouldRefreshGraphForToolResult($inlineToolCall['name'], is_array($toolResult) ? $toolResult : [])) {
                 queueGraphRefresh($status, $requestId);
             }
-            clearCurrentExecutionStatus($status, $requestId);
             if (!empty($toolResult['__disabled'])) {
                 $finalContent = 'That tool has been disabled for me, please enable it if you want me to use that tool.';
                 break;
@@ -1080,11 +1173,11 @@ while (true) {
             $executionState['activeJobIds'],
             $executionState['executionDetails']
         );
+        usleep(120000);
         $toolResult = executeToolCall($inlineToolCall['name'], $inlineToolCall['arguments'], $activeTools);
         if (shouldRefreshGraphForToolResult($inlineToolCall['name'], is_array($toolResult) ? $toolResult : [])) {
             queueGraphRefresh($status, $requestId);
         }
-        clearCurrentExecutionStatus($status, $requestId);
         if (!empty($toolResult['__disabled'])) {
             $finalContent = 'That tool has been disabled for me, please enable it if you want me to use that tool.';
             break;
@@ -1108,6 +1201,7 @@ while (true) {
 }
 
 clearStatusFlags($status);
+clearCurrentExecutionStatus($status, $requestId);
 writeStatus($requestId, $status);
 
 echo json_encode([

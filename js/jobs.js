@@ -11,7 +11,7 @@
     var graphStateQueued = false;
     var activePollRequests = {};
     var pollTimer = null;
-    var POLL_INTERVAL_MS = 500;
+    var POLL_INTERVAL_MS = 150;
 
     function looksLikeHtmlSnippet(code) {
         if (!code) return false;
@@ -103,6 +103,15 @@
         return out;
     }
 
+    function signalGraphActivity(sections, nodeIds, durationMs) {
+        if (typeof window.MemoryGraphSignalActivity !== 'function') return;
+        window.MemoryGraphSignalActivity({
+            sections: Array.isArray(sections) ? sections : [],
+            nodeIds: Array.isArray(nodeIds) ? nodeIds : [],
+            durationMs: durationMs || 2600
+        });
+    }
+
     function syncGraphState() {
         if (typeof window.agentState === 'undefined') return;
         var runningIds = getRunningNodeIds();
@@ -115,6 +124,7 @@
         var anyCheckingMemory = false;
         var anyCheckingInstructions = false;
         var anyCheckingMcps = false;
+        var anyCheckingJobs = runningIds.length > 0;
 
         Object.keys(jobs).forEach(function (name) {
             var job = jobs[name];
@@ -140,17 +150,46 @@
             });
         });
 
-        window.agentState.setBackgroundCheckingJobs(runningIds.length > 0);
-        window.agentState.setBackgroundGettingAvailTools(anyGettingTools);
-        window.agentState.setBackgroundCheckingMemory(anyCheckingMemory);
-        window.agentState.setBackgroundCheckingInstructions(anyCheckingInstructions);
-        window.agentState.setBackgroundCheckingMcps(anyCheckingMcps);
-        window.agentState.setBackgroundJobIds(runningIds);
-        window.agentState.setBackgroundActiveToolIds(uniq(aggregatedToolIds));
-        window.agentState.setBackgroundActiveMemoryIds(uniq(aggregatedMemoryIds));
-        window.agentState.setBackgroundActiveInstructionIds(uniq(aggregatedInstructionIds));
-        window.agentState.setBackgroundActiveMcpIds(uniq(aggregatedMcpIds));
-        window.agentState.setBackgroundExecutionDetailsByNode(aggregatedExecutionDetails);
+        if (typeof window.agentState.applyBackgroundJobState === 'function') {
+            window.agentState.applyBackgroundJobState({
+                checkingJobs: anyCheckingJobs,
+                gettingAvailTools: anyGettingTools,
+                checkingMemory: anyCheckingMemory,
+                checkingInstructions: anyCheckingInstructions,
+                checkingMcps: anyCheckingMcps,
+                activeJobIds: runningIds,
+                activeToolIds: uniq(aggregatedToolIds),
+                activeMemoryIds: uniq(aggregatedMemoryIds),
+                activeInstructionIds: uniq(aggregatedInstructionIds),
+                activeMcpIds: uniq(aggregatedMcpIds),
+                executionDetailsByNode: aggregatedExecutionDetails,
+                durationMs: anyCheckingJobs ? 3200 : 2400
+            });
+        } else {
+            window.agentState.setBackgroundCheckingJobs(runningIds.length > 0);
+            window.agentState.setBackgroundJobIds(runningIds);
+            window.agentState.setBackgroundGettingAvailTools(anyGettingTools);
+            window.agentState.setBackgroundCheckingMemory(anyCheckingMemory);
+            window.agentState.setBackgroundCheckingInstructions(anyCheckingInstructions);
+            window.agentState.setBackgroundCheckingMcps(anyCheckingMcps);
+            window.agentState.setBackgroundActiveToolIds(uniq(aggregatedToolIds));
+            window.agentState.setBackgroundActiveMemoryIds(uniq(aggregatedMemoryIds));
+            window.agentState.setBackgroundActiveInstructionIds(uniq(aggregatedInstructionIds));
+            window.agentState.setBackgroundActiveMcpIds(uniq(aggregatedMcpIds));
+            window.agentState.setBackgroundExecutionDetailsByNode(aggregatedExecutionDetails);
+            signalGraphActivity(
+                [
+                    runningIds.length ? 'agent' : '',
+                    anyGettingTools ? 'tools' : '',
+                    anyCheckingMemory ? 'memory' : '',
+                    anyCheckingInstructions ? 'instructions' : '',
+                    anyCheckingMcps ? 'mcps' : '',
+                    anyCheckingJobs ? 'jobs' : ''
+                ].filter(Boolean),
+                ['agent'].concat(uniq(aggregatedToolIds.concat(aggregatedMemoryIds, aggregatedInstructionIds, aggregatedMcpIds, runningIds))),
+                anyCheckingJobs ? 3200 : 2400
+            );
+        }
         if (typeof window.MemoryGraphUpdateExecutionPanel === 'function') window.MemoryGraphUpdateExecutionPanel();
     }
 
@@ -330,6 +369,7 @@
         });
         if (jobs[name]) jobs[name].lastStatus = null;
         stopPollingJob(name);
+        scheduleGraphStateSync();
         if (state === 'completed') {
             scheduleCompletedRemoval(name);
         }
@@ -398,10 +438,14 @@
                 return;
             }
             var msg = (xhr && xhr.responseJSON && xhr.responseJSON.error) || (xhr && xhr.statusText) || 'Step failed';
+            if (msg && typeof msg === 'object') {
+                msg = (msg.message !== undefined && typeof msg.message === 'string') ? msg.message : JSON.stringify(msg);
+            }
+            var displayMsg = (msg && String(msg).trim()) || 'Step failed';
             var results = (jobs[name] && jobs[name].results) ? jobs[name].results.slice() : [];
             results.push({
                 task: stepText,
-                response: 'Error: ' + msg
+                response: 'Error: ' + displayMsg
             });
             setJobState(name, {
                 results: results,

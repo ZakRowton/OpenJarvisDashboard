@@ -16,6 +16,10 @@ if ($requestId === '') {
         'activeInstructionIds' => [],
         'activeMcpIds' => [],
         'activeJobIds' => [],
+        'memoryToolExecuting' => false,
+        'toolExecuting' => false,
+        'instructionToolExecuting' => false,
+        'isAccessingMemoryFile' => false,
         'graphRefreshToken' => '',
     ]);
     exit;
@@ -25,6 +29,7 @@ $path = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'runtime' . DIRECTORY_SEPARATOR
 if (!file_exists($path)) {
     echo json_encode([
         'requestId' => $requestId,
+        'fileExists' => false,
         'thinking' => false,
         'gettingAvailTools' => false,
         'activeToolIds' => [],
@@ -36,6 +41,10 @@ if (!file_exists($path)) {
         'activeInstructionIds' => [],
         'activeMcpIds' => [],
         'activeJobIds' => [],
+        'memoryToolExecuting' => false,
+        'toolExecuting' => false,
+        'instructionToolExecuting' => false,
+        'isAccessingMemoryFile' => false,
         'graphRefreshToken' => '',
     ]);
     exit;
@@ -69,9 +78,14 @@ $effectiveExecutionDetails = isset($data['executionDetailsByNode']) && is_array(
     ? $data['executionDetailsByNode']
     : ($hasRecentActivity && isset($data['lastExecutionDetailsByNode']) && is_array($data['lastExecutionDetailsByNode']) ? $data['lastExecutionDetailsByNode'] : []);
 $effectiveThinking = !empty($data['thinking']) || $effectiveGettingAvailTools || $effectiveCheckingMemory || $effectiveCheckingInstructions || $effectiveCheckingMcps || $effectiveCheckingJobs || count($effectiveActiveToolIds) > 0 || count($effectiveActiveMemoryIds) > 0 || count($effectiveActiveInstructionIds) > 0 || count($effectiveActiveMcpIds) > 0 || count($effectiveActiveJobIds) > 0;
+$effectiveMemoryToolExecuting = $effectiveCheckingMemory || count($effectiveActiveMemoryIds) > 0;
+$effectiveToolExecuting = $effectiveGettingAvailTools || count($effectiveActiveToolIds) > 0;
+$effectiveInstructionToolExecuting = $effectiveCheckingInstructions || count($effectiveActiveInstructionIds) > 0;
+$effectiveAccessingMemoryFile = $effectiveCheckingMemory || count($effectiveActiveMemoryIds) > 0;
 
 echo json_encode([
     'requestId' => $requestId,
+    'fileExists' => true,
     'thinking' => $effectiveThinking,
     'gettingAvailTools' => $effectiveGettingAvailTools,
     'activeToolIds' => $effectiveActiveToolIds,
@@ -83,6 +97,10 @@ echo json_encode([
     'activeInstructionIds' => $effectiveActiveInstructionIds,
     'activeMcpIds' => $effectiveActiveMcpIds,
     'activeJobIds' => $effectiveActiveJobIds,
+    'memoryToolExecuting' => $effectiveMemoryToolExecuting,
+    'toolExecuting' => $effectiveToolExecuting,
+    'instructionToolExecuting' => $effectiveInstructionToolExecuting,
+    'isAccessingMemoryFile' => $effectiveAccessingMemoryFile,
     'executionDetailsByNode' => $effectiveExecutionDetails,
     'graphRefreshToken' => isset($data['graphRefreshToken']) ? (string) $data['graphRefreshToken'] : '',
 ]);

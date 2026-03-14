@@ -28,4 +28,15 @@ if ($action === 'get') {
     exit;
 }
 
+if ($action === 'save') {
+    $name = isset($input['name']) ? (string) $input['name'] : '';
+    $content = isset($input['content']) ? (string) $input['content'] : '';
+    $result = write_instruction_file($name, $content);
+    if (isset($result['error'])) {
+        http_response_code(400);
+    }
+    echo json_encode($result);
+    exit;
+}
+
 echo json_encode(['error' => 'invalid action']);
