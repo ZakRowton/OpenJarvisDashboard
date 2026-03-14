@@ -117,7 +117,7 @@
             bottom: 24px;
             left: 50%;
             transform: translateX(-50%);
-            z-index: 100;
+            z-index: 110;
             width: min(560px, calc(100vw - 32px));
             background: var(--panel-bg);
             backdrop-filter: blur(12px);
@@ -404,6 +404,14 @@
             border-radius: 16px;
             padding: 14px;
             box-shadow: 0 14px 40px rgba(0, 0, 0, 0.48), 0 0 24px rgba(214, 219, 226, 0.08);
+        }
+        @media (max-width: 768px) {
+            .running-jobs-widget {
+                left: 50%;
+                transform: translateX(-50%);
+                bottom: 100px;
+                width: min(360px, calc(100vw - 24px));
+            }
         }
         .running-jobs-title {
             color: var(--gold);

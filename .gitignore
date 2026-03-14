@@ -11,4 +11,6 @@ tools/*
 !tools/.gitkeep
 runtime/chat-status/*
 !runtime/chat-status/.gitkeep
+runtime/chat-history/*
+!runtime/chat-history/.gitkeep
 config/agent_config.json

@@ -9,6 +9,7 @@ header('Access-Control-Allow-Methods: POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'env.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'provider_config.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'chat_history_store.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'memory_store.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'instruction_store.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'job_store.php';
@@ -25,6 +26,11 @@ if (($_SERVER['REQUEST_METHOD'] ?? 'GET') !== 'POST') {
     http_response_code(405);
     echo json_encode(['error' => 'Method not allowed']);
     exit;
+}
+
+// Long-running jobs (e.g. AI news) can exceed default 120s; allow up to 10 minutes
+if (function_exists('set_time_limit')) {
+    @set_time_limit(600);
 }
 
 $providers = [
@@ -719,6 +725,24 @@ function executeBuiltInTool(string $toolName, array $arguments, array $activeToo
         }
         return list_models_for_provider($providerKey);
     }
+    if ($toolName === 'list_chat_history') {
+        $limit = isset($arguments['limit']) ? (int) $arguments['limit'] : 20;
+        $offset = isset($arguments['offset']) ? (int) $arguments['offset'] : 0;
+        $limit = max(1, min(100, $limit));
+        $offset = max(0, $offset);
+        return list_chat_history($limit, $offset);
+    }
+    if ($toolName === 'get_chat_history') {
+        $id = (string) ($arguments['id'] ?? $arguments['requestId'] ?? '');
+        if ($id === '') {
+            return ['error' => 'id or requestId is required'];
+        }
+        $exchange = get_chat_history($id);
+        if ($exchange === null) {
+            return ['error' => 'Chat exchange not found', 'id' => $id];
+        }
+        return $exchange;
+    }
     if ($toolName === 'add_provider') {
         $key = (string) ($arguments['key'] ?? $arguments['providerKey'] ?? '');
         $name = (string) ($arguments['name'] ?? $key);
@@ -821,6 +845,7 @@ function buildToolUsageInstruction(array $activeTools): string {
         "To discover what tools are currently available, call list_available_tools.\n" .
         "To work with memory, use the memory tools such as list_memory_files and read_memory_file when available.\n" .
         "To configure MCP servers, use the MCP config tools such as configure_mcp_server or set_mcp_server_env_var when available.\n" .
+        "If you need context from earlier conversations, use list_chat_history and get_chat_history to look up past exchanges.\n" .
         "If the user explicitly provides local credentials, private keys, API keys, env vars, headers, or similar config values for a tool or MCP server, you may use them to configure the local app and MCP servers. Do not refuse solely because the value looks secret.\n" .
         ($toolList !== '' ? "Currently active tools include: " . $toolList . "\n" : '') .
         "When you are not calling a tool, answer normally."
@@ -856,6 +881,31 @@ function normalizeConversation(array $messages, string $systemPrompt, string $pr
         $conversation[] = $entry;
     }
     return $conversation;
+}
+
+/** Truncate conversation to avoid context length limits. Keeps system (if first) + last N messages; caps each content length. */
+function truncateConversationForContext(array $conversation, int $maxMessages = 28, int $maxContentChars = 12000): array {
+    if (count($conversation) <= $maxMessages) {
+        $out = $conversation;
+    } else {
+        $system = [];
+        if (isset($conversation[0]) && is_array($conversation[0]) && ($conversation[0]['role'] ?? '') === 'system') {
+            $system = [array_shift($conversation)];
+        }
+        $out = array_merge($system, array_slice($conversation, -($maxMessages - count($system))));
+    }
+    $result = [];
+    foreach ($out as $msg) {
+        if (!is_array($msg)) {
+            continue;
+        }
+        $content = $msg['content'] ?? '';
+        if (is_string($content) && strlen($content) > $maxContentChars) {
+            $msg = array_merge($msg, ['content' => substr($content, 0, $maxContentChars) . "\n\n[truncated for context length]"]);
+        }
+        $result[] = $msg;
+    }
+    return $result;
 }
 
 /** Ensure every message has string content for OpenAI-compatible APIs (avoids "Input should be a valid string"). */
@@ -1019,6 +1069,13 @@ if (empty($messages)) {
     echo json_encode(['error' => 'Missing messages']);
     exit;
 }
+$initialUserContent = '';
+foreach (array_reverse($messages) as $m) {
+    if (is_array($m) && isset($m['role']) && $m['role'] === 'user' && isset($m['content'])) {
+        $initialUserContent = is_string($m['content']) ? $m['content'] : json_encode($m['content']);
+        break;
+    }
+}
 if (!isset($providers[$providerKey])) {
     http_response_code(400);
     echo json_encode(['error' => 'Unknown provider']);
@@ -1057,7 +1114,7 @@ while (true) {
         break;
     }
 
-    $conversationToSend = sanitizeConversationForApi($conversation);
+    $conversationToSend = sanitizeConversationForApi(truncateConversationForContext($conversation, 20, 6000));
     $result = $provider['type'] === 'gemini'
         ? requestGemini($provider, $modelId, $conversationToSend, $temperature, $effectiveSystemPrompt)
         : requestOpenAiCompatible($provider, $modelId, $conversationToSend, $temperature, $openAiTools);
@@ -1322,6 +1379,10 @@ while (true) {
 clearStatusFlags($status);
 clearCurrentExecutionStatus($status, $requestId);
 writeStatus($requestId, $status);
+
+if ($initialUserContent !== '' && trim($finalContent) !== '') {
+    append_chat_exchange($requestId, $initialUserContent, $finalContent);
+}
 
 echo json_encode([
     'choices' => [

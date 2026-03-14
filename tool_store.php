@@ -693,6 +693,32 @@ function get_builtin_tools(): array {
         ],
         'code' => "// Built-in tool\n// Lists models for a provider.",
     ], [
+        'name' => 'list_chat_history',
+        'description' => 'List recent chat exchanges (past conversations). Returns id, requestId, ts, and short previews. Use when you need to refer to earlier context that may have been truncated.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'limit' => ['type' => 'integer', 'description' => 'Max number of exchanges to return (default 20, max 100).'],
+                'offset' => ['type' => 'integer', 'description' => 'Skip this many from the start (for pagination).'],
+            ],
+        ],
+        'code' => "// Built-in tool\n// Lists recent chat history.",
+    ], [
+        'name' => 'get_chat_history',
+        'description' => 'Get full content of a past chat exchange by id or requestId. Use after list_chat_history when you need the full user/assistant content of a previous conversation.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'id' => ['type' => 'string', 'description' => 'Exchange id or requestId from list_chat_history.'],
+                'requestId' => ['type' => 'string', 'description' => 'Alternative: request_id of the chat to retrieve.'],
+            ],
+        ],
+        'code' => "// Built-in tool\n// Retrieves one chat exchange.",
+    ], [
         'name' => 'add_provider',
         'description' => 'Add a new AI provider. Provide key, display name, endpoint (or endpointBase for Gemini-type), type (openai or gemini), defaultModel, and envVar (the .env variable name for the API key).',
         'active' => true,
