@@ -109,6 +109,7 @@
         var group = new THREE.Group();
         group.position.set(pos[0], pos[1], pos[2]);
         group.userData.clickedUntil = 0;
+        group.userData.disabled = data.active === false;
 
         var glow = new THREE.Mesh(
             new THREE.SphereGeometry(radius * (data.glowScale || 1.8), 24, 24),
@@ -360,6 +361,28 @@
         var glow = nodeGlowById[id];
         var meta = nodeMetaById[id] || null;
         if (!group || !mesh || !mesh.material) return;
+        var disabled = group.userData.disabled === true;
+        if (disabled) {
+            group.scale.set(1, 1, 1);
+            var gray = 0x3a3a3a;
+            var dimGlow = 0.25;
+            if (meta && meta.shellMesh && meta.shellMesh.material) {
+                meta.shellMesh.material.color.setHex(gray);
+                if (meta.shellMesh.material.emissive) meta.shellMesh.material.emissive.setHex(gray);
+                meta.shellMesh.material.emissiveIntensity = 0.05;
+            }
+            if (mesh.material) {
+                mesh.material.color.setHex(0x2a2a2a);
+                if (mesh.material.emissive) mesh.material.emissive.setHex(gray);
+                mesh.material.emissiveIntensity = 0.08;
+            }
+            if (meta && meta.innerMesh && meta.innerMesh.material) {
+                meta.innerMesh.material.color.setHex(gray);
+                meta.innerMesh.material.opacity = 0.15;
+            }
+            if (glow && glow.material) glow.material.opacity = dimGlow;
+            return;
+        }
         var clicked = performance.now() < (group.userData.clickedUntil || 0);
         var runtimeActive = performance.now() < (runtimeActivityByNodeId[id] || 0);
         if (!runtimeActive && runtimeActivityByNodeId[id]) delete runtimeActivityByNodeId[id];

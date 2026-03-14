@@ -644,6 +644,87 @@ function get_builtin_tools(): array {
             'required' => ['name'],
         ],
         'code' => "// Built-in tool\n// Deletes a custom tool PHP file and its registry entry.",
+    ], [
+        'name' => 'get_current_provider_model',
+        'description' => 'Get the currently selected AI provider and model. Returns provider key and model id used for chat.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => ['type' => 'object', 'properties' => new stdClass()],
+        'code' => "// Built-in tool\n// Returns current provider and model.",
+    ], [
+        'name' => 'set_provider_model',
+        'description' => 'Change the selected AI provider and/or model. Persists so the UI and future requests use this provider and model.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'provider' => ['type' => 'string', 'description' => 'Provider key (e.g. mercury, gemini, or a custom key).'],
+                'model' => ['type' => 'string', 'description' => 'Model id for that provider (e.g. mercury-2, gemini-2.5-flash).'],
+            ],
+            'required' => ['provider'],
+        ],
+        'code' => "// Built-in tool\n// Sets current provider and model.",
+    ], [
+        'name' => 'list_providers_models',
+        'description' => 'List all configured AI providers and their available models (built-in and custom). Use this to see which provider/model to set.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => ['type' => 'object', 'properties' => new stdClass()],
+        'code' => "// Built-in tool\n// Lists providers and models.",
+    ], [
+        'name' => 'list_providers_available',
+        'description' => 'List all available AI providers (keys and display names). Use this to see which providers are configured before listing models or setting provider.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => ['type' => 'object', 'properties' => new stdClass()],
+        'code' => "// Built-in tool\n// Lists available providers.",
+    ], [
+        'name' => 'list_models_for_provider',
+        'description' => 'List all model ids available for a given provider. Pass the provider key (e.g. mercury, gemini). Use after list_providers_available to choose a model.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'providerKey' => ['type' => 'string', 'description' => 'Provider key (e.g. mercury, gemini, featherless, alibaba).'],
+            ],
+            'required' => ['providerKey'],
+        ],
+        'code' => "// Built-in tool\n// Lists models for a provider.",
+    ], [
+        'name' => 'add_provider',
+        'description' => 'Add a new AI provider. Provide key, display name, endpoint (or endpointBase for Gemini-type), type (openai or gemini), defaultModel, and envVar (the .env variable name for the API key).',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'key' => ['type' => 'string', 'description' => 'Unique provider key (alphanumeric, underscores/dashes).'],
+                'name' => ['type' => 'string', 'description' => 'Display name for the provider.'],
+                'endpoint' => ['type' => 'string', 'description' => 'Chat completions URL for OpenAI-compatible APIs.'],
+                'endpointBase' => ['type' => 'string', 'description' => 'Base URL for Gemini-type APIs (e.g. https://generativelanguage.googleapis.com/v1beta/models).'],
+                'type' => ['type' => 'string', 'description' => 'openai or gemini.'],
+                'defaultModel' => ['type' => 'string', 'description' => 'Default model id for this provider.'],
+                'envVar' => ['type' => 'string', 'description' => '.env variable name for API key (e.g. MY_API_KEY).'],
+            ],
+            'required' => ['key'],
+        ],
+        'code' => "// Built-in tool\n// Adds a new provider.",
+    ], [
+        'name' => 'add_model_to_provider',
+        'description' => 'Add a model id to a provider\'s model list so it appears in the UI and can be selected. Use for both built-in and custom providers.',
+        'active' => true,
+        'builtin' => true,
+        'parameters' => [
+            'type' => 'object',
+            'properties' => [
+                'providerKey' => ['type' => 'string', 'description' => 'Provider key (e.g. mercury, gemini).'],
+                'modelId' => ['type' => 'string', 'description' => 'Model id to add (e.g. gemini-2.0, mercury-3).'],
+            ],
+            'required' => ['providerKey', 'modelId'],
+        ],
+        'code' => "// Built-in tool\n// Adds a model to a provider.",
     ]];
 }
 

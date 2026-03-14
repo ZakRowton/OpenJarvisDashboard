@@ -749,6 +749,28 @@
         if (providerSelect) providerSelect.addEventListener('change', syncModelSelect);
         syncModelSelect();
 
+        function applyAgentConfig(data) {
+            if (!data || !data.providers) return;
+            window.MEMORY_GRAPH_PROVIDERS = data.providers;
+            if (providerSelect) {
+                providerSelect.innerHTML = '';
+                Object.keys(data.providers).forEach(function (key) {
+                    var opt = document.createElement('option');
+                    opt.value = key;
+                    opt.textContent = (data.providers[key] && data.providers[key].name) ? data.providers[key].name : key;
+                    providerSelect.appendChild(opt);
+                });
+                if (data.currentProvider) providerSelect.value = data.currentProvider;
+                syncModelSelect();
+            }
+            if (modelSelect && data.currentModel) modelSelect.value = data.currentModel;
+        }
+        window.applyAgentConfig = applyAgentConfig;
+        fetch('api/agent_config.php')
+            .then(function (r) { return r.ok ? r.json() : null; })
+            .then(function (data) { if (data) applyAgentConfig(data); })
+            .catch(function () {});
+
         window.getAgentSettings = function () {
             return {
                 provider: (providerSelect && providerSelect.value) || 'mercury',

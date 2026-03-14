@@ -416,6 +416,9 @@
                 else if (typeof res === 'string') content = res;
                 var preview = content.length > 120 ? content.slice(0, 120) + '…' : content;
                 showNotification(preview || 'No text in response.', text, content);
+                if (typeof window.applyAgentConfig === 'function') {
+                    $.getJSON('api/agent_config.php').done(function (data) { if (data) window.applyAgentConfig(data); }).fail(function () {});
+                }
             })
             .fail(function (xhr) {
                 if (wasStopped || (xhr && xhr.statusText === 'abort')) return;

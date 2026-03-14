@@ -8,6 +8,7 @@ header('Access-Control-Allow-Origin: ' . ($_SERVER['HTTP_ORIGIN'] ?? '*'));
 header('Access-Control-Allow-Methods: POST, OPTIONS');
 header('Access-Control-Allow-Headers: Content-Type');
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'env.php';
+require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'provider_config.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'memory_store.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'instruction_store.php';
 require_once dirname(__DIR__) . DIRECTORY_SEPARATOR . 'job_store.php';
@@ -52,6 +53,10 @@ $providers = [
         'defaultModel' => 'gemini-2.5-flash',
     ],
 ];
+$customProviders = get_custom_provider_definitions_for_chat();
+foreach ($customProviders as $key => $def) {
+    $providers[$key] = $def;
+}
 
 function statusDirPath(): string {
     $path = dirname(__DIR__) . DIRECTORY_SEPARATOR . 'runtime' . DIRECTORY_SEPARATOR . 'chat-status';
@@ -520,26 +525,33 @@ function executeBuiltInTool(string $toolName, array $arguments, array $activeToo
     if (in_array($toolName, ['list_available_tools', 'list_tools', 'get_tools'], true)) {
         $toolCallsPath = tool_registry_path();
         $rawJson = file_exists($toolCallsPath) ? (string) file_get_contents($toolCallsPath) : '{"tools":[]}';
+        $activeOnly = array_filter($activeTools, function ($tool) {
+            return !empty($tool['active']);
+        });
         return [
             'tools' => array_values(array_map(function ($tool) {
                 return [
                     'name' => $tool['name'] ?? '',
                     'description' => $tool['description'] ?? '',
-                    'active' => !empty($tool['active']),
+                    'active' => true,
                     'parameters' => $tool['parameters'] ?? ['type' => 'object', 'properties' => new stdClass()],
                     'builtin' => !empty($tool['builtin']),
                     'code' => !empty($tool['builtin']) ? ($tool['code'] ?? '') : (read_tool_file_content((string) ($tool['name'] ?? '')) ?? ''),
                 ];
-            }, $activeTools)),
+            }, $activeOnly)),
             'tool_calls_json' => $rawJson,
         ];
     }
     if ($toolName === 'list_memory_files') {
+        $all = list_memory_files_meta();
+        $memories = array_values(array_filter($all, function ($m) {
+            return !empty($m['active']);
+        }));
         $memories = array_map(function ($memory) {
             unset($memory['content']);
             return $memory;
-        }, list_memory_files_meta());
-        return ['memories' => array_values($memories)];
+        }, $memories);
+        return ['memories' => $memories];
     }
     if ($toolName === 'list_instruction_files') {
         $instructions = array_map(function ($instruction) {
@@ -556,7 +568,11 @@ function executeBuiltInTool(string $toolName, array $arguments, array $activeToo
         return ['jobs' => array_values($jobs)];
     }
     if ($toolName === 'list_mcp_servers') {
-        return ['servers' => list_mcp_servers_meta()];
+        $all = list_mcp_servers_meta();
+        $servers = array_values(array_filter($all, function ($s) {
+            return !empty($s['active']);
+        }));
+        return ['servers' => $servers];
     }
     if ($toolName === 'read_mcp_server') {
         $server = get_mcp_server_meta((string) ($arguments['name'] ?? ''));
@@ -678,6 +694,50 @@ function executeBuiltInTool(string $toolName, array $arguments, array $activeToo
     }
     if ($toolName === 'delete_tool') {
         return delete_tool_artifact((string) ($arguments['name'] ?? ''));
+    }
+    if ($toolName === 'get_current_provider_model') {
+        return get_current_provider_model();
+    }
+    if ($toolName === 'set_provider_model') {
+        $provider = (string) ($arguments['provider'] ?? $arguments['providerKey'] ?? '');
+        $model = (string) ($arguments['model'] ?? $arguments['modelId'] ?? '');
+        if ($provider === '') {
+            return ['error' => 'provider is required'];
+        }
+        return set_current_provider_model($provider, $model);
+    }
+    if ($toolName === 'list_providers_models') {
+        return list_providers_models_for_tool();
+    }
+    if ($toolName === 'list_providers_available') {
+        return list_providers_available();
+    }
+    if ($toolName === 'list_models_for_provider') {
+        $providerKey = (string) ($arguments['providerKey'] ?? $arguments['provider'] ?? '');
+        if ($providerKey === '') {
+            return ['error' => 'providerKey is required'];
+        }
+        return list_models_for_provider($providerKey);
+    }
+    if ($toolName === 'add_provider') {
+        $key = (string) ($arguments['key'] ?? $arguments['providerKey'] ?? '');
+        $name = (string) ($arguments['name'] ?? $key);
+        $endpoint = (string) ($arguments['endpoint'] ?? $arguments['endpointBase'] ?? '');
+        $type = (string) ($arguments['type'] ?? 'openai');
+        $defaultModel = (string) ($arguments['defaultModel'] ?? '');
+        $envVar = (string) ($arguments['envVar'] ?? '');
+        if ($key === '') {
+            return ['error' => 'key is required'];
+        }
+        return add_custom_provider($key, $name, $endpoint, $type, $defaultModel, $envVar);
+    }
+    if ($toolName === 'add_model_to_provider') {
+        $providerKey = (string) ($arguments['providerKey'] ?? $arguments['provider'] ?? '');
+        $modelId = (string) ($arguments['modelId'] ?? $arguments['model'] ?? '');
+        if ($providerKey === '' || $modelId === '') {
+            return ['error' => 'providerKey and modelId are required'];
+        }
+        return add_model_to_provider($providerKey, $modelId);
     }
     return ['error' => 'Unknown built-in tool'];
 }
@@ -971,7 +1031,15 @@ if (($provider['apiKey'] ?? '') === '') {
     echo json_encode(['error' => 'Missing API key for provider "' . $providerKey . '". Set it in .env.']);
     exit;
 }
-$modelId = $model ?: $provider['defaultModel'];
+// Resolve model: must be valid for this provider to avoid sending e.g. mercury-2 to Gemini API
+$uiProviders = get_providers_for_ui();
+$allowedModels = isset($uiProviders['providers'][$providerKey]['models']) && is_array($uiProviders['providers'][$providerKey]['models'])
+    ? $uiProviders['providers'][$providerKey]['models']
+    : [];
+if ($model !== null && $model !== '' && !in_array($model, $allowedModels, true)) {
+    $model = $provider['defaultModel'] ?? '';
+}
+$modelId = ($model !== null && $model !== '') ? $model : ($provider['defaultModel'] ?? '');
 $activeTools = loadToolRegistry();
 $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
 $effectiveSystemPrompt = trim(($systemPrompt !== '' ? $systemPrompt . "\n\n" : '') . buildToolUsageInstruction($activeTools));
@@ -1097,6 +1165,23 @@ while (true) {
                 ];
                 $activeTools = loadToolRegistry();
                 $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+                if ($normalizedFunctionName === 'set_provider_model' && is_array($toolResult) && !empty($toolResult['ok'])) {
+                    $cfg = get_current_provider_model();
+                    $providerKey = $cfg['provider'];
+                    $model = $cfg['model'];
+                    if (isset($providers[$providerKey])) {
+                        $provider = $providers[$providerKey];
+                        $uiProviders = get_providers_for_ui();
+                        $allowedModels = isset($uiProviders['providers'][$providerKey]['models']) && is_array($uiProviders['providers'][$providerKey]['models'])
+                            ? $uiProviders['providers'][$providerKey]['models']
+                            : [];
+                        if (!in_array($model, $allowedModels, true)) {
+                            $model = $provider['defaultModel'] ?? $model;
+                        }
+                        $modelId = $model;
+                        $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+                    }
+                }
             }
             continue;
         }
@@ -1139,6 +1224,23 @@ while (true) {
             ];
             $activeTools = loadToolRegistry();
             $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+            if ($inlineToolCall['name'] === 'set_provider_model' && is_array($toolResult) && !empty($toolResult['ok'])) {
+                $cfg = get_current_provider_model();
+                $providerKey = $cfg['provider'];
+                $model = $cfg['model'];
+                if (isset($providers[$providerKey])) {
+                    $provider = $providers[$providerKey];
+                    $uiProviders = get_providers_for_ui();
+                    $allowedModels = isset($uiProviders['providers'][$providerKey]['models']) && is_array($uiProviders['providers'][$providerKey]['models'])
+                        ? $uiProviders['providers'][$providerKey]['models']
+                        : [];
+                    if (!in_array($model, $allowedModels, true)) {
+                        $model = $provider['defaultModel'] ?? $model;
+                    }
+                    $modelId = $model;
+                    $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+                }
+            }
             continue;
         }
 
@@ -1193,6 +1295,23 @@ while (true) {
         ];
         $activeTools = loadToolRegistry();
         $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+        if ($inlineToolCall['name'] === 'set_provider_model' && is_array($toolResult) && !empty($toolResult['ok'])) {
+            $cfg = get_current_provider_model();
+            $providerKey = $cfg['provider'];
+            $model = $cfg['model'];
+            if (isset($providers[$providerKey])) {
+                $provider = $providers[$providerKey];
+                $uiProviders = get_providers_for_ui();
+                $allowedModels = isset($uiProviders['providers'][$providerKey]['models']) && is_array($uiProviders['providers'][$providerKey]['models'])
+                    ? $uiProviders['providers'][$providerKey]['models']
+                    : [];
+                if (!in_array($model, $allowedModels, true)) {
+                    $model = $provider['defaultModel'] ?? $model;
+                }
+                $modelId = $model;
+                $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
+            }
+        }
         continue;
     }
 

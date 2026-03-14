@@ -89,6 +89,40 @@
                     "prompt"
                 ]
             }
+        },
+        {
+            "name": "brave_image_search",
+            "description": "Search the web using Brave Search and return the first image URL found for the query.",
+            "active": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "Search query to find an image for."
+                    }
+                },
+                "required": [
+                    "query"
+                ]
+            }
+        },
+        {
+            "name": "embed_image",
+            "description": "Embeds an image URL as a markdown image tag for direct display.",
+            "active": true,
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {
+                        "type": "string",
+                        "description": "The direct URL to an image."
+                    }
+                },
+                "required": [
+                    "url"
+                ]
+            }
         }
     ]
 }
