@@ -1,4 +1,8 @@
-# MemoryGraph
+<div align="center">
+  <img src="LivingMemory.PNG" alt="Living AI Memory Dashboard" width="480" />
+</div>
+
+# Living AI Memory Dashboard
 
 MemoryGraph is a lightweight all-in-one interface for connecting AI providers and models to a live execution framework with visual graph-based introspection.
 
