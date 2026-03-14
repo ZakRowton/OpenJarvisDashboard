@@ -345,6 +345,16 @@
     renderer.domElement.addEventListener('click', function (event) {
         doPick(event.clientX, event.clientY);
     }, true);
+    // Touch support for mobile: tap to select node (touchend fires after tap)
+    renderer.domElement.addEventListener('touchend', function (event) {
+        if (event.changedTouches && event.changedTouches.length) {
+            var t = event.changedTouches[0];
+            if (doPick(t.clientX, t.clientY)) {
+                event.preventDefault();
+                event.stopPropagation();
+            }
+        }
+    }, { passive: false });
 
     scene.add(new THREE.AmbientLight(0xcfd6de, 0.62));
     var dir = new THREE.DirectionalLight(0xffffff, 0.28);

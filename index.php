@@ -163,7 +163,7 @@
             position: fixed;
             bottom: 100px;
             right: 20px;
-            z-index: 99;
+            z-index: 105;
             display: flex;
             flex-direction: column;
             gap: 10px;
@@ -268,6 +268,39 @@
             box-shadow: inset 0 0 0 1px rgba(214, 219, 226, 0.05);
             overflow: hidden;
             display: block;
+        }
+        @media (max-width: 768px) {
+            #graph-container canvas {
+                touch-action: none;
+            }
+            #notifications {
+                bottom: 130px;
+                left: 12px;
+                right: 12px;
+                max-width: none;
+                z-index: 111;
+            }
+            .notification {
+                min-height: 44px;
+                -webkit-tap-highlight-color: transparent;
+            }
+            #response-modal.modal {
+                z-index: 9999;
+            }
+            #response-modal .modal-dialog {
+                max-width: calc(100vw - 24px);
+                margin: 12px auto;
+            }
+            #response-modal .modal-body {
+                max-height: 65vh;
+                -webkit-overflow-scrolling: touch;
+            }
+            #response-modal .modal-content {
+                max-height: 85vh;
+            }
+            body .modal-backdrop {
+                z-index: 9998;
+            }
         }
         .font-display { font-family: 'Cinzel', serif; }
         /* Node widget – glowing panel */
