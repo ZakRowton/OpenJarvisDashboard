@@ -847,9 +847,26 @@ function buildToolUsageInstruction(array $activeTools): string {
         "To configure MCP servers, use the MCP config tools such as configure_mcp_server or set_mcp_server_env_var when available.\n" .
         "If you need context from earlier conversations, use list_chat_history and get_chat_history to look up past exchanges.\n" .
         "If the user explicitly provides local credentials, private keys, API keys, env vars, headers, or similar config values for a tool or MCP server, you may use them to configure the local app and MCP servers. Do not refuse solely because the value looks secret.\n" .
+        "When a tool returns an error (result contains an 'error' field), you MUST fix the tool and retry: use edit_tool_file to change the tool's PHP code, or edit_tool_registry_entry to change its description/parameters. Then call the tool again. Keep editing and retrying until the tool succeeds; do not give up or report the error to the user until you have retried by fixing the tool.\n" .
         ($toolList !== '' ? "Currently active tools include: " . $toolList . "\n" : '') .
         "When you are not calling a tool, answer normally."
     );
+}
+
+/** Build the user/tool message content for a tool result; when result has 'error', append fix-and-retry directive. */
+function formatToolResultForModel(string $toolName, array $toolResult, bool $inlineFormat = false): string {
+    $json = json_encode($toolResult);
+    if ($inlineFormat) {
+        $base = 'Tool "' . $toolName . '" returned: ' . $json;
+        if (isset($toolResult['error'])) {
+            return $base . '. The result contains an error. You MUST fix the tool using edit_tool_file (to change the PHP code) or edit_tool_registry_entry (to change parameters), then call the tool again. Keep retrying until the tool succeeds; do not report the error to the user until you have retried.';
+        }
+        return $base . '. Continue and answer the original user request.';
+    }
+    if (isset($toolResult['error'])) {
+        return 'Error - fix this tool with edit_tool_file or edit_tool_registry_entry and call it again: ' . $json;
+    }
+    return $json;
 }
 
 function normalizeConversation(array $messages, string $systemPrompt, string $providerType): array {
@@ -1214,11 +1231,12 @@ while (true) {
                     $finalContent = 'That memory file has been disabled for me, please enable it if you want me to use that memory.';
                     break 2;
                 }
+                $toolResultArr = is_array($toolResult) ? $toolResult : ['result' => $toolResult];
                 $conversation[] = [
                     'role' => 'tool',
                     'tool_call_id' => $callId,
                     'name' => normalizeToolName($functionName),
-                    'content' => json_encode($toolResult),
+                    'content' => formatToolResultForModel($normalizedFunctionName, $toolResultArr, false),
                 ];
                 $activeTools = loadToolRegistry();
                 $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
@@ -1275,9 +1293,10 @@ while (true) {
                 break;
             }
             $conversation[] = ['role' => 'assistant', 'content' => $assistantContent];
+            $toolResultArr = is_array($toolResult) ? $toolResult : ['result' => $toolResult];
             $conversation[] = [
                 'role' => 'user',
-                'content' => 'Tool "' . $inlineToolCall['name'] . '" returned: ' . json_encode($toolResult) . '. Continue and answer the original user request.',
+                'content' => formatToolResultForModel($inlineToolCall['name'], $toolResultArr, true),
             ];
             $activeTools = loadToolRegistry();
             $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
@@ -1346,9 +1365,10 @@ while (true) {
             break;
         }
         $conversation[] = ['role' => 'assistant', 'content' => $assistantContent];
+        $toolResultArr = is_array($toolResult) ? $toolResult : ['result' => $toolResult];
         $conversation[] = [
             'role' => 'user',
-            'content' => 'Tool "' . $inlineToolCall['name'] . '" returned: ' . json_encode($toolResult) . '. Continue and answer the original user request.',
+            'content' => formatToolResultForModel($inlineToolCall['name'], $toolResultArr, true),
         ];
         $activeTools = loadToolRegistry();
         $openAiTools = $provider['type'] === 'openai' ? buildOpenAiTools($activeTools) : [];
