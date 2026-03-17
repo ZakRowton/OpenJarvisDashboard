@@ -1126,7 +1126,8 @@ function buildToolUsageInstruction(array $activeTools): string {
         "CRITICAL - Tool creation: When you use create_or_update_tool, you MUST immediately call the newly created tool to test it. If it fails (error in result), use edit_tool_file to fix the PHP code and call the tool again. Repeat until the tool succeeds. Never respond to the user or report success until you have tested the tool and it works. This applies no matter what - always test, always fix until success.\n" .
         "When any tool returns an error (result contains an 'error' field), you MUST fix the tool and retry: use edit_tool_file to change the tool's PHP code, or edit_tool_registry_entry to change its description/parameters. Then call the tool again. Keep editing and retrying until the tool succeeds; do not give up or report the error to the user until you have retried by fixing the tool.\n" .
         ($toolList !== '' ? "Currently active tools include: " . $toolList . "\n" : '') .
-        "When you are not calling a tool, answer normally."
+        "When you are not calling a tool, answer normally.\n" .
+        "CRITICAL - Do not stop prematurely: Use as many tool calls as needed to complete the task. Never respond with 'no tool calls', 'I have no tools to use', or similar - keep using tools until the task is complete, then give your final answer."
     );
 }
 
@@ -1194,16 +1195,26 @@ function normalizeConversation(array $messages, string $systemPrompt, string $pr
     return $conversation;
 }
 
-/** Truncate conversation to avoid context length limits. Keeps system (if first) + last N messages; caps each content length. */
-function truncateConversationForContext(array $conversation, int $maxMessages = 28, int $maxContentChars = 12000): array {
+/** Truncate conversation to avoid context length limits. Keeps system + first user + last N messages; caps content to prevent unbounded growth. */
+function truncateConversationForContext(array $conversation): array {
+    $maxMessages = 32;
+    $maxContentChars = 4000;
+    $maxToolContentChars = 1800;
+
     if (count($conversation) <= $maxMessages) {
         $out = $conversation;
     } else {
         $system = [];
-        if (isset($conversation[0]) && is_array($conversation[0]) && ($conversation[0]['role'] ?? '') === 'system') {
-            $system = [array_shift($conversation)];
+        $firstUser = [];
+        $rest = $conversation;
+        if (isset($rest[0]) && is_array($rest[0]) && ($rest[0]['role'] ?? '') === 'system') {
+            $system = [array_shift($rest)];
         }
-        $out = array_merge($system, array_slice($conversation, -($maxMessages - count($system))));
+        if (!empty($rest) && is_array($rest[0]) && ($rest[0]['role'] ?? '') === 'user') {
+            $firstUser = [array_shift($rest)];
+        }
+        $keepCount = $maxMessages - count($system) - count($firstUser);
+        $out = array_merge($system, $firstUser, array_slice($rest, -max(1, $keepCount)));
     }
     $result = [];
     foreach ($out as $msg) {
@@ -1211,8 +1222,14 @@ function truncateConversationForContext(array $conversation, int $maxMessages = 
             continue;
         }
         $content = $msg['content'] ?? '';
-        if (is_string($content) && strlen($content) > $maxContentChars) {
-            $msg = array_merge($msg, ['content' => substr($content, 0, $maxContentChars) . "\n\n[truncated for context length]"]);
+        if (!is_string($content)) {
+            $result[] = $msg;
+            continue;
+        }
+        $role = $msg['role'] ?? 'user';
+        $cap = ($role === 'tool') ? $maxToolContentChars : $maxContentChars;
+        if (strlen($content) > $cap) {
+            $msg = array_merge($msg, ['content' => substr($content, 0, $cap) . "\n\n[truncated]"]);
         }
         $result[] = $msg;
     }
@@ -1423,12 +1440,12 @@ $apiErrorRetryMax = 3;
 
 while (true) {
     $loopCount++;
-    if ($loopCount > 25) {
+    if ($loopCount > 500) {
         $finalContent = trim($finalContent) !== '' ? $finalContent : 'Stopped after too many tool iterations.';
         break;
     }
 
-    $conversationToSend = sanitizeConversationForApi(truncateConversationForContext($conversation, 20, 6000));
+    $conversationToSend = sanitizeConversationForApi(truncateConversationForContext($conversation));
     $result = $provider['type'] === 'gemini'
         ? requestGemini($provider, $modelId, $conversationToSend, $temperature, $effectiveSystemPrompt)
         : requestOpenAiCompatible($provider, $modelId, $conversationToSend, $temperature, $openAiTools);
